@@ -26,12 +26,25 @@ import asyncio
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 import base64
+from pathlib import Path
 
 # =============================================
-# 설정
+# 설정 (config.json에서 로드)
 # =============================================
-CLIENT_ID     = "075a7bc0-263d-4343-b383-c855f9380654"
-CLIENT_SECRET = "776977f3-99bb-4e3e-81c0-668800235b15"
+def _load_config():
+    config_path = Path(__file__).parent / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(
+            "config.json 파일이 없습니다.\n"
+            "config.json 을 만들고\n"
+            "CLIENT_ID와 CLIENT_SECRET을 입력해주세요."
+        )
+    with open(config_path, encoding="utf-8") as f:
+        return json.load(f)
+
+_config       = _load_config()
+CLIENT_ID     = _config["CLIENT_ID"]
+CLIENT_SECRET = _config["CLIENT_SECRET"]
 REDIRECT_URI  = "https://httpbin.org/get"
 SCOPES        = "r:devices:* w:devices:* x:devices:* r:hubs:* r:locations:* w:locations:* x:locations:* r:scenes:* x:scenes:* r:rules:* w:rules:* r:installedapps w:installedapps"
 
@@ -86,7 +99,7 @@ def save_token(token_data: dict):
     token_data["expires_at"] = (datetime.now() + timedelta(seconds=expires_in)).isoformat()
     with open(TOKEN_FILE, "w", encoding="utf-8") as f:
         json.dump(token_data, f, ensure_ascii=False, indent=4)
-    print(f"\n✅ 토큰이 저장되었습니다: {TOKEN_FILE}")
+    print(f"\n토큰이 저장되었습니다: {TOKEN_FILE}")
 
 
 def main():
@@ -118,7 +131,7 @@ def main():
     code = input("\n▶ code 값을 여기에 붙여넣으세요: ").strip()
 
     if not code:
-        print("❌ code가 입력되지 않았습니다. 다시 실행해주세요.")
+        print(" code가 입력되지 않았습니다. 다시 실행해주세요.")
         return
 
     print("\nAccess token으로 교환 중...")
@@ -126,7 +139,7 @@ def main():
     try:
         token_data = asyncio.run(exchange_code_for_token(code))
     except Exception as e:
-        print(f"\n❌ 오류 발생: {e}")
+        print(f"\n 오류 발생: {e}")
         return
 
     save_token(token_data)
@@ -137,7 +150,7 @@ def main():
     print(f"  expires_in    : {token_data.get('expires_in')}초 (24시간)")
     print(f"  scope         : {token_data.get('scope')}")
     print(f"  만료 시각      : {token_data.get('expires_at')}")
-    print("\n✅ 완료! 이제 smartthings_collector.py 를 실행하면 됩니다.")
+    print("\n완료! 이제 launcher.py 를 실행하면 됩니다.")
     print("=" * 60)
 
 

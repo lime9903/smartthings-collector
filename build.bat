@@ -12,6 +12,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: config.json 존재 확인
+if not exist "config.json" (
+    echo [ERROR] config.json 파일이 없습니다.
+    echo         config.example.json 을 복사해서 config.json 을 만들고
+    echo         CLIENT_ID 와 CLIENT_SECRET 을 입력해주세요.
+    pause
+    exit /b 1
+)
+
 echo [1/3] Installing libraries...
 pip install aiohttp matplotlib pyinstaller --quiet
 echo       Done.
@@ -25,6 +34,7 @@ pyinstaller ^
   --add-data "smartthings_collector.py;." ^
   --add-data "smartthings_dashboard.py;." ^
   --add-data "smartthings_auth.py;." ^
+  --add-data "config.json;." ^
   --hidden-import aiohttp ^
   --hidden-import asyncio ^
   --hidden-import matplotlib ^
