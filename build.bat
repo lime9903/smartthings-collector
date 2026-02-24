@@ -11,6 +11,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+
 echo [1/3] Installing libraries...
 pip install aiohttp matplotlib pyinstaller --quiet
 echo       Done.
