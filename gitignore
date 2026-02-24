@@ -1,0 +1,26 @@
+# 토큰 파일 (access_token, refresh_token)
+*.json
+!config.json
+
+# 수집 데이터
+csv_data/
+*.csv
+
+# 로그
+logs/
+*.log
+
+# PyInstaller 빌드 결과물
+dist/
+build/
+*.spec
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# 환경
+.env
+venv/
+.venv/
