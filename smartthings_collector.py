@@ -1,26 +1,29 @@
 """
-=== 프로그램 설명 ===
-1. 필요한 라이브러리:
+=== Program Overview ===
+1. Required libraries:
    - pip install aiohttp
 
-2. 실행 순서:
-   - 최초 1회: smartthings_auth.py 실행 → 토큰 파일 생성
-   - 이후: 이 스크립트만 실행하면 됩니다. 토큰은 자동 갱신됩니다.
+2. Execution order:
+   - First run: execute smartthings_auth.py → token file created
+   - After: just run this script. Token is refreshed automatically.
 
-3. 데이터 수집 로직:
-   - 10분마다 모든 기기의 메타데이터를 업데이트합니다.
-   - 12초마다 모든 기기의 상태를 병렬로 조회합니다.
-   - 수집된 데이터는 YYYYMMDD 형식의 날짜 기반 폴더 안에 CSV 파일로 저장됩니다.
-   - 조회 중 필드 누락 또는 오류가 발생한 기기는 "밴 목록"에 추가됩니다.
+3. Data collection logic:
+   - Updates device metadata every 10 minutes.
+   - Fetches all device statuses in parallel every 1 minute.
+   - Collected data is saved to CSV files under YYYYMMDD date folders.
+   - Saved to separate CSV files by device type:
+     * Smart plug (SMP): power, energy
+     * Motion sensor: motion, temperature
+   - Devices with missing fields or errors are added to the ban list.
 
-4. 토큰 관리:
-   - access_token은 24시간마다 만료됩니다.
-   - 만료 30분 전에 refresh_token을 사용해 자동으로 갱신합니다.
-   - 401 응답 수신 시 즉시 토큰 갱신을 시도합니다.
-   - 토큰 갱신 실패 시 프로그램을 안전하게 종료합니다.
+4. Token management:
+   - access_token expires every 24 hours.
+   - Automatically refreshes using refresh_token 30 minutes before expiry.
+   - Immediately attempts token refresh on 401 response.
+   - Safely shuts down on token refresh failure.
 
-5. 네트워크 오류 처리:
-   - DNS 오류 등 일시적 오류 발생 시 지수 백오프로 재시도합니다. (최대 5회)
+5. Network error handling:
+   - Retries with exponential backoff on transient errors like DNS failures. (max 5 times)
 """
 
 import os
@@ -32,8 +35,23 @@ import asyncio
 import logging
 import signal
 from datetime import datetime, timedelta
+from pathlib import Path
 
-# === 로깅 설정 ===
+# === Load config.json ===
+def _load_config():
+    config_path = Path(__file__).parent / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(
+            "config.json not found.\n"
+            "Copy config.example.json to config.json\n"
+            "and fill in CLIENT_ID and CLIENT_SECRET."
+        )
+    with open(config_path, encoding="utf-8") as f:
+        return json.load(f)
+
+_config = _load_config()
+
+# === Logging setup ===
 LOG_FILE = os.path.abspath("C:/smartthings_data/logs/smartthings.log")
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logging.basicConfig(
@@ -45,56 +63,56 @@ logging.basicConfig(
     ]
 )
 
-# === OAuth 설정 ===
-CLIENT_ID     = "075a7bc0-263d-4343-b383-c855f9380654"
-CLIENT_SECRET = "776977f3-99bb-4e3e-81c0-668800235b15"
+# === OAuth settings ===
+CLIENT_ID     = _config["CLIENT_ID"]
+CLIENT_SECRET = _config["CLIENT_SECRET"]
 REDIRECT_URI  = "https://httpbin.org/get"
 TOKEN_URL     = "https://api.smartthings.com/oauth/token"
 TOKEN_FILE    = os.path.abspath("C:/smartthings_data/tokens/oauth_token.json")
 os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
 
-# === API 설정 ===
+# === API settings ===
 API_BASE_URL = "https://api.smartthings.com/v1"
 
-# === 경로 설정 ===
+# === Path settings ===
 CSV_BASE_DIR  = os.path.abspath("C:/smartthings_data/csv_data")
 METADATA_FILE = os.path.abspath("C:/smartthings_data/metadata/device_metadata.json")
 BAN_LIST_FILE = os.path.abspath("C:/smartthings_data/ban_list.json")
 os.makedirs(os.path.dirname(METADATA_FILE), exist_ok=True)
 
-# === 인터벌 설정 (초) ===
+# === Interval settings (seconds) ===
 DEVICE_UPDATE_INTERVAL = 600
 DEVICE_STATUS_INTERVAL = 60
 
-# === 재시도 설정 ===
+# === Retry settings ===
 MAX_RETRIES     = 5
 BASE_RETRY_WAIT = 5
 MAX_RETRY_WAIT  = 60
 
-# === 토큰 만료 여유 시간 ===
-TOKEN_REFRESH_MARGIN = timedelta(minutes=30)  # 만료 30분 전 갱신
+# === Token expiry margin ===
+TOKEN_REFRESH_MARGIN = timedelta(minutes=30)
 
-# === 세션 타임아웃 ===
+# === Session timeout ===
 SESSION_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 
-# === 로컬 관리 데이터 ===
+# === Local state ===
 device_metadata  = []
 ban_list         = []
 running          = True
 current_date     = datetime.now().strftime("%Y%m%d")
 last_update_time = None
 
-# === 토큰 관리 ===
+# === Token state ===
 token_data = {
     "access_token":  None,
     "refresh_token": None,
     "expires_at":    None,
 }
-token_refreshing = False  # race condition 방지: 동시에 하나의 갱신만 허용
+token_refreshing = False
 
-# === 대시보드 공유 상태 ===
+# === Shared dashboard state ===
 dashboard_state = {
-    "status":        "초기화 중",
+    "status":        "Initializing",
     "last_cycle":    None,
     "token_expires": None,
     "total":         0,
@@ -102,10 +120,9 @@ dashboard_state = {
     "fail":          0,
     "devices":       [],
 }
-on_data_updated = None  # 수집 완료 시 대시보드가 등록하는 콜백 함수
+on_data_updated = None
 
-# === 네트워크 오류 판별 ===
-# ClientConnectorDNSError는 aiohttp 버전에 따라 없을 수 있으므로 동적으로 처리
+# === Network error types ===
 _retriable = [
     aiohttp.ClientConnectorError,
     aiohttp.ServerDisconnectedError,
@@ -118,16 +135,15 @@ RETRIABLE_EXCEPTIONS = tuple(_retriable)
 
 
 # ==============================
-# 토큰 관리 함수
+# Token management
 # ==============================
 
 def load_token():
-    """저장된 토큰 파일을 로드합니다."""
     global token_data
     if not os.path.exists(TOKEN_FILE):
         logging.error(
-            f"토큰 파일이 없습니다: {TOKEN_FILE}\n"
-            "smartthings_auth.py를 먼저 실행해서 토큰을 발급받아주세요."
+            f"Token file not found: {TOKEN_FILE}\n"
+            "Please run smartthings_auth.py first to obtain a token."
         )
         return False
 
@@ -145,64 +161,53 @@ def load_token():
         token_data["expires_at"] = datetime.now() + timedelta(hours=24)
 
     logging.info(
-        f"토큰 로드 완료. 만료 시각: {token_data['expires_at'].strftime('%Y-%m-%d %H:%M:%S')}"
+        f"Token loaded. Expires at: {token_data['expires_at'].strftime('%Y-%m-%d %H:%M:%S')}"
     )
     dashboard_state["token_expires"] = token_data["expires_at"].strftime("%Y-%m-%d %H:%M:%S")
     return True
 
 
 def save_token():
-    """현재 토큰 데이터를 파일에 저장합니다."""
     with open(TOKEN_FILE, "w", encoding="utf-8") as f:
         json.dump({
             "access_token":  token_data["access_token"],
             "refresh_token": token_data["refresh_token"],
             "expires_at":    token_data["expires_at"].isoformat(),
         }, f, ensure_ascii=False, indent=4)
-    logging.info("토큰 파일이 갱신되었습니다.")
+    logging.info("Token file updated.")
     dashboard_state["token_expires"] = token_data["expires_at"].strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_headers():
-    """현재 access_token으로 Authorization 헤더를 반환합니다."""
     return {"Authorization": f"Bearer {token_data['access_token']}"}
 
 
 def make_basic_auth_header():
-    """SmartThings 토큰 엔드포인트용 Basic Auth 헤더를 생성합니다."""
     credentials = f"{CLIENT_ID}:{CLIENT_SECRET}"
     encoded = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
     return f"Basic {encoded}"
 
 
 def is_token_expiring():
-    """토큰이 만료 30분 이내이면 True를 반환합니다."""
     if token_data["expires_at"] is None:
         return True
     return datetime.now() >= token_data["expires_at"] - TOKEN_REFRESH_MARGIN
 
 
 async def refresh_access_token():
-    """
-    refresh_token으로 새 access_token을 발급받습니다.
-    - 동시 갱신 요청은 락으로 차단 (race condition 방지)
-    - refresh_token 만료(401) 시 명확한 오류 메시지 출력
-    - 성공 시 True, 실패 시 False 반환
-    """
     global token_data, token_refreshing
 
-    # 이미 갱신 중이면 완료될 때까지 대기 후 True 반환 (중복 갱신 방지)
     if token_refreshing:
-        logging.info("다른 요청이 토큰을 갱신 중입니다. 완료를 기다립니다...")
+        logging.info("Another request is refreshing the token. Waiting...")
         while token_refreshing:
             await asyncio.sleep(0.5)
         return token_data["access_token"] is not None
 
     token_refreshing = True
-    logging.info("access_token 갱신을 시작합니다...")
+    logging.info("Starting access_token refresh...")
 
     if not token_data["refresh_token"]:
-        logging.error("refresh_token이 없습니다. smartthings_auth.py를 다시 실행해주세요.")
+        logging.error("No refresh_token. Please re-run smartthings_auth.py.")
         token_refreshing = False
         return False
 
@@ -230,29 +235,31 @@ async def refresh_access_token():
                     token_data["expires_at"] = datetime.now() + timedelta(seconds=expires_in)
                     save_token()
                     logging.info(
-                        f"access_token 갱신 성공. "
-                        f"새 만료 시각: {token_data['expires_at'].strftime('%Y-%m-%d %H:%M:%S')}"
+                        f"access_token refreshed successfully. "
+                        f"New expiry: {token_data['expires_at'].strftime('%Y-%m-%d %H:%M:%S')}"
                     )
                     token_refreshing = False
                     return True
                 elif resp.status == 401:
-                    # refresh_token 자체가 만료된 경우
-                    logging.error("refresh_token이 만료되었습니다. (29일 미사용 시 만료) smartthings_auth.py를 다시 실행해서 재인증해주세요.")
+                    logging.error(
+                        "refresh_token has expired. (Expires after 29 days of inactivity) "
+                        "Please re-run smartthings_auth.py to re-authenticate."
+                    )
                     token_refreshing = False
                     return False
                 else:
                     text = await resp.text()
-                    logging.error(f"토큰 갱신 실패 ({resp.status}): {text}")
+                    logging.error(f"Token refresh failed ({resp.status}): {text}")
                     token_refreshing = False
                     return False
     except Exception as e:
-        logging.error(f"토큰 갱신 중 오류: {type(e).__name__}: {e}")
+        logging.error(f"Error during token refresh: {type(e).__name__}: {e}")
         token_refreshing = False
         return False
 
 
 # ==============================
-# 메타데이터 / 밴 목록 관리
+# Metadata / Ban list
 # ==============================
 
 def load_metadata():
@@ -260,35 +267,36 @@ def load_metadata():
     if os.path.exists(METADATA_FILE):
         with open(METADATA_FILE, "r", encoding="utf-8") as f:
             device_metadata = json.load(f)
-        logging.info(f"메타데이터 로드 완료. ({len(device_metadata)}개 기기)")
+        logging.info(f"Metadata loaded. ({len(device_metadata)} device(s))")
     else:
-        logging.warning("메타데이터 파일이 없습니다. 초기 업데이트가 필요합니다.")
+        logging.warning("Metadata file not found. Initial update required.")
 
 def save_metadata():
     with open(METADATA_FILE, "w", encoding="utf-8") as f:
         json.dump(device_metadata, f, ensure_ascii=False, indent=4)
-    logging.info(f"메타데이터 저장 완료: {METADATA_FILE}\n")
+    logging.info(f"Metadata saved: {METADATA_FILE}\n")
 
 def load_ban_list():
     global ban_list
     if os.path.exists(BAN_LIST_FILE):
         with open(BAN_LIST_FILE, "r", encoding="utf-8") as f:
             ban_list = json.load(f)
-        logging.info(f"밴 목록 로드 완료. ({len(ban_list)}개 기기)")
+        logging.info(f"Ban list loaded. ({len(ban_list)} device(s))")
     else:
-        logging.info("밴 목록 파일이 없습니다. 초기화된 상태로 시작합니다.")
+        logging.info("Ban list file not found. Starting fresh.")
 
 def save_ban_list():
     with open(BAN_LIST_FILE, "w", encoding="utf-8") as f:
         json.dump(ban_list, f, ensure_ascii=False, indent=4)
-    logging.info(f"밴 목록 저장 완료. ({len(ban_list)}개 기기)")
+    logging.info(f"Ban list saved. ({len(ban_list)} device(s))")
 
 
 # ==============================
-# CSV 저장
+# CSV saving
 # ==============================
 
-def save_to_csv(device_status, device_id):
+def save_plug_to_csv(device_status, device_id):
+    """Save smart plug data: power, energy."""
     global current_date
     today_date  = datetime.now().strftime("%Y%m%d")
     folder_path = os.path.join(CSV_BASE_DIR, today_date)
@@ -304,44 +312,77 @@ def save_to_csv(device_status, device_id):
         with open(filepath, mode='a', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             if not file_exists:
-                writer.writerow(["Timestamp", "Label", "Location Name", "Power (W)", "Energy (Wh)"])
+                writer.writerow([
+                    "Timestamp", "Label", "Location", "Room",
+                    "Power (W)", "Energy (Wh)"
+                ])
             writer.writerow([
                 device_status["timestamp"],
                 device_status["label"],
                 device_status["location_name"],
+                device_status["room_name"],
                 device_status["power"],
-                device_status["energy"]
+                device_status["energy"],
             ])
         logging.info(
-            f"CSV 저장: Label={device_status['label']}, "
+            f"CSV saved [Plug]: {device_status['label']} | "
             f"Power={device_status['power']}W, Energy={device_status['energy']}Wh"
         )
     except Exception as e:
-        logging.error(f"CSV 저장 중 오류: {e}")
+        logging.error(f"CSV save error ({device_status['label']}): {e}")
+
+
+def save_motion_to_csv(device_status, device_id):
+    """Save motion sensor data: motion, temperature."""
+    global current_date
+    today_date  = datetime.now().strftime("%Y%m%d")
+    folder_path = os.path.join(CSV_BASE_DIR, today_date)
+    if today_date != current_date or not os.path.exists(folder_path):
+        current_date = today_date
+        os.makedirs(folder_path, exist_ok=True)
+
+    filename    = f"{device_status['label']}_{device_id}_{today_date}.csv"
+    filepath    = os.path.join(folder_path, filename)
+    file_exists = os.path.isfile(filepath)
+
+    try:
+        with open(filepath, mode='a', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file)
+            if not file_exists:
+                writer.writerow([
+                    "Timestamp", "Label", "Location", "Room",
+                    "Motion", "Temperature (°C)"
+                ])
+            writer.writerow([
+                device_status["timestamp"],
+                device_status["label"],
+                device_status["location_name"],
+                device_status["room_name"],
+                device_status["motion"],
+                device_status["temperature"],
+            ])
+        logging.info(
+            f"CSV saved [Motion]: {device_status['label']} | "
+            f"Motion={device_status['motion']}, "
+            f"Temp={device_status['temperature']}°C"
+        )
+    except Exception as e:
+        logging.error(f"CSV save error ({device_status['label']}): {e}")
 
 
 # ==============================
-# API 요청 (재시도 + 401 자동 갱신)
+# API requests (retry + auto 401 refresh)
 # ==============================
 
-async def request_with_retry(session, url, context="요청"):
-    """
-    GET 요청을 수행합니다.
-    - 요청 전 토큰 만료 임박 시 자동 갱신
-    - 네트워크 오류 시 지수 백오프로 최대 MAX_RETRIES 회 재시도
-    - 401 응답 시 토큰 갱신 후 1회만 재시도 (중복 갱신 방지)
-    - 403 응답 시 최대 2회 재시도 (일시적 권한 오류 대응)
-    - 모든 재시도 실패 시 None 반환
-    """
+async def request_with_retry(session, url, context="request"):
     global running
     wait = BASE_RETRY_WAIT
-    token_refreshed = False  # 이 요청에서 이미 토큰 갱신을 했는지 추적
+    token_refreshed = False
 
-    # 요청 전 토큰 만료 임박 확인
     if is_token_expiring():
         success = await refresh_access_token()
         if not success:
-            logging.error("토큰 갱신 실패로 요청을 중단합니다.")
+            logging.error("Halting request due to token refresh failure.")
             return None
         token_refreshed = True
 
@@ -355,101 +396,148 @@ async def request_with_retry(session, url, context="요청"):
 
                 elif resp.status == 401:
                     if token_refreshed:
-                        # 이미 갱신했는데도 401이면 refresh_token 문제 → 종료
                         logging.error(
-                            f"[{context}] 토큰 갱신 후에도 401 발생. "
-                            "refresh_token이 만료되었을 수 있습니다. 프로그램을 종료합니다."
+                            f"[{context}] 401 persists after token refresh. Shutting down."
                         )
                         running = False
                         return None
-                    logging.warning(f"[{context}] 401 Unauthorized → 토큰 갱신 시도...")
+                    logging.warning(f"[{context}] 401 Unauthorized → attempting token refresh...")
                     success = await refresh_access_token()
                     if not success:
-                        logging.error("토큰 갱신 실패. 프로그램을 종료합니다.")
+                        logging.error("Token refresh failed. Shutting down.")
                         running = False
                         return None
                     token_refreshed = True
-                    continue  # 갱신 후 즉시 재시도
+                    continue
 
                 elif resp.status == 403:
-                    # 403은 일시적 권한 오류일 수 있으므로 최대 2회 재시도
                     if attempt <= 2:
-                        logging.warning(
-                            f"[{context}] HTTP 403. ({attempt}/2회) "
-                            f"{wait}초 후 재시도..."
-                        )
+                        logging.warning(f"[{context}] HTTP 403 ({attempt}/2 attempt(s). {wait}s, retrying...")
                         await asyncio.sleep(wait)
                         wait = min(wait * 2, MAX_RETRY_WAIT)
                         continue
                     else:
-                        logging.warning(f"[{context}] HTTP 403. 재시도 초과, 건너뜁니다.")
+                        logging.warning(f"[{context}] HTTP 403. Retry limit reached.")
                         return None
 
                 elif 400 <= resp.status < 500:
-                    # 그 외 4xx는 재시도해도 의미 없음
-                    logging.warning(f"[{context}] HTTP {resp.status}. 재시도하지 않습니다.")
+                    logging.warning(f"[{context}] HTTP {resp.status}. Not retrying.")
                     return None
 
                 else:
-                    logging.warning(f"[{context}] HTTP {resp.status}. (시도 {attempt}/{MAX_RETRIES})")
+                    logging.warning(f"[{context}] HTTP {resp.status}. (attempt {attempt}/{MAX_RETRIES})")
 
         except RETRIABLE_EXCEPTIONS as e:
             logging.warning(
-                f"[{context}] 네트워크 오류 (시도 {attempt}/{MAX_RETRIES}): "
+                f"[{context}] Network error (attempt {attempt}/{MAX_RETRIES}): "
                 f"{type(e).__name__}: {e}"
             )
         except Exception as e:
-            logging.error(f"[{context}] 예상치 못한 오류: {type(e).__name__}: {e}")
+            logging.error(f"[{context}] Unexpected error: {type(e).__name__}: {e}")
             return None
 
         if attempt < MAX_RETRIES:
-            logging.info(f"[{context}] {wait}초 후 재시도...")
+            logging.info(f"[{context}] {wait}s, retrying...")
             await asyncio.sleep(wait)
             wait = min(wait * 2, MAX_RETRY_WAIT)
 
-    logging.error(f"[{context}] 최대 재시도 초과. 이번 요청을 건너뜁니다.")
+    logging.error(f"[{context}] Max retries exceeded.")
     return None
 
 
 # ==============================
-# API 조회 함수
+# API fetch functions
 # ==============================
-
-async def fetch_device_list(session):
-    global device_metadata, ban_list
-    data = await request_with_retry(session, f"{API_BASE_URL}/devices", context="기기 목록 조회")
-    if data is None:
-        logging.error("기기 목록 조회 실패. 기존 메타데이터를 유지합니다.")
-        return
-
-    metadata = []
-    for device in data.get("items", []):
-        label     = device["label"]
-        device_id = device["deviceId"]
-        if label.startswith("SMP"):
-            location_name = await fetch_location_name(session, device["locationId"])
-            metadata.append({"id": device_id, "label": label, "location_name": location_name})
-        else:
-            if device_id not in ban_list:
-                ban_list.append(device_id)
-                logging.warning(f"밴 목록 추가: {label} (ID={device_id})")
-
-    device_metadata = metadata
-    save_ban_list()
-    logging.info(f"기기 목록 업데이트 완료. 총 {len(device_metadata)}개 기기.")
-    save_metadata()
-
 
 async def fetch_location_name(session, location_id):
     data = await request_with_retry(
         session,
         f"{API_BASE_URL}/locations/{location_id}",
-        context=f"위치 조회 ({location_id})"
+        context=f"Location lookup ({location_id})"
     )
     return data.get("name", "Unknown") if data else "Unknown"
 
 
-async def fetch_device_status(session, device):
+async def fetch_room_name(session, location_id, room_id):
+    """Fetch room name. Returns empty string if roomId is missing."""
+    if not room_id:
+        return ""
+    data = await request_with_retry(
+        session,
+        f"{API_BASE_URL}/locations/{location_id}/rooms/{room_id}",
+        context=f"Room lookup ({room_id})"
+    )
+    return data.get("name", "") if data else ""
+
+
+async def fetch_device_list(session):
+    """Fetch device list and update metadata.
+    - Smart plugs starting with SMP
+    - Motion sensors (label contains "Motion" or type is ZIGBEE)
+    All others are added to the ban list.
+    """
+    global device_metadata, ban_list
+
+    data = await request_with_retry(session, f"{API_BASE_URL}/devices", context="Device list fetch")
+    if data is None:
+        logging.error("Device list fetch failed. Keeping existing metadata.")
+        return
+
+    metadata = []
+    location_cache = {}  # Cache: location_id → location_name
+
+    for device in data.get("items", []):
+        label       = device.get("label", "")
+        device_id   = device["deviceId"]
+        location_id = device.get("locationId", "")
+        room_id     = device.get("roomId", "")  # None or empty string if missing
+
+        # Smart plug (SMP)
+        is_plug   = label.startswith("SMP")
+        # Motion sensor (label contains "Motion" or device name contains "motion")
+        dev_name  = device.get("name", "")
+        is_motion = "motion" in dev_name.lower() or "Motion Sensor" in label
+
+        if not (is_plug or is_motion):
+            if device_id not in ban_list:
+                ban_list.append(device_id)
+                logging.info(f"Not a target device, added to ban list: {label} (ID={device_id})")
+            continue
+
+        # Cache location name (avoid duplicate API calls)
+        if location_id not in location_cache:
+            location_cache[location_id] = await fetch_location_name(session, location_id)
+        location_name = location_cache[location_id]
+
+        # Fetch room name
+        room_name = await fetch_room_name(session, location_id, room_id)
+
+        device_type = "plug" if is_plug else "motion"
+        metadata.append({
+            "id":            device_id,
+            "label":         label,
+            "location_id":   location_id,
+            "location_name": location_name,
+            "room_name":     room_name,
+            "type":          device_type,
+        })
+        logging.info(
+            f"Device registered: [{device_type}] {label} | "
+            f"Location={location_name}, Room={room_name or '(none)'}"
+        )
+
+    device_metadata = metadata
+    save_ban_list()
+    logging.info(
+        f"Device list updated. "
+        f"Plugs: {sum(1 for d in metadata if d['type']=='plug')}, "
+        f"Motion sensors: {sum(1 for d in metadata if d['type']=='motion')}"
+    )
+    save_metadata()
+
+
+async def fetch_plug_status(session, device):
+    """Fetch smart plug status: power, energy."""
     device_id = device["id"]
     if device_id in ban_list:
         return None
@@ -457,10 +545,9 @@ async def fetch_device_status(session, device):
     data = await request_with_retry(
         session,
         f"{API_BASE_URL}/devices/{device_id}/status",
-        context=f"기기 상태 ({device['label']})"
+        context=f"Plug status ({device['label']})"
     )
     if data is None:
-        # None은 네트워크/토큰 오류 → ban_list에 추가하지 않음
         return None
 
     try:
@@ -469,21 +556,64 @@ async def fetch_device_status(session, device):
         energy = main.get("energyMeter", {}).get("energy", {}).get("value")
 
         if power is None or energy is None:
-            raise KeyError("필드 누락")
+            raise KeyError("power/energy field missing")
 
-        device_status = {
+        status = {
             "timestamp":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "label":         device["label"],
             "location_name": device["location_name"],
+            "room_name":     device["room_name"],
             "power":         power,
             "energy":        energy,
+            "type":          "plug",
         }
-        save_to_csv(device_status, device_id)
-        return device_status
+        save_plug_to_csv(status, device_id)
+        return status
 
     except KeyError as e:
-        # 필드 누락은 기기 자체의 문제 → ban_list에 추가
-        logging.error(f"필드 누락으로 ban_list에 추가: {device['label']} ({e})")
+        logging.error(f"Missing field, added to ban list: {device['label']} ({e})")
+        if device_id not in ban_list:
+            ban_list.append(device_id)
+            save_ban_list()
+        return None
+
+
+async def fetch_motion_status(session, device):
+    """Fetch motion sensor status: motion, temperature."""
+    device_id = device["id"]
+    if device_id in ban_list:
+        return None
+
+    data = await request_with_retry(
+        session,
+        f"{API_BASE_URL}/devices/{device_id}/status",
+        context=f"Motion status ({device['label']})"
+    )
+    if data is None:
+        return None
+
+    try:
+        main        = data.get("components", {}).get("main", {})
+        motion      = main.get("motionSensor",   {}).get("motion",      {}).get("value")
+        temperature = main.get("temperatureMeasurement", {}).get("temperature", {}).get("value")
+
+        if motion is None:
+            raise KeyError("motion field missing")
+
+        status = {
+            "timestamp":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "label":         device["label"],
+            "location_name": device["location_name"],
+            "room_name":     device["room_name"],
+            "motion":        motion,       # "active" or "inactive"
+            "temperature":   temperature,  # float (°C), None if unavailable
+            "type":          "motion",
+        }
+        save_motion_to_csv(status, device_id)
+        return status
+
+    except KeyError as e:
+        logging.error(f"Missing field, added to ban list: {device['label']} ({e})")
         if device_id not in ban_list:
             ban_list.append(device_id)
             save_ban_list()
@@ -491,18 +621,17 @@ async def fetch_device_status(session, device):
 
 
 # ==============================
-# 주기적 작업
+# Periodic tasks
 # ==============================
 
 async def periodic_tasks(session):
     global last_update_time
-    last_update_time = None
 
     while running:
         start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        logging.info(f"================= 시간: {start_time} =================")
+        logging.info(f"================= Time: {start_time} =================")
 
-        # 10분마다 기기 목록 업데이트
+        # Update device list every 10 minutes
         now = datetime.now()
         if now.minute % 10 == 0 and (
             last_update_time is None or last_update_time.minute != now.minute
@@ -510,46 +639,77 @@ async def periodic_tasks(session):
             last_update_time = now
             await fetch_device_list(session)
 
-        # 모든 기기 상태 병렬 조회
-        tasks   = [fetch_device_status(session, device) for device in device_metadata]
+        # Fetch all devices in parallel (plug/motion)
+        tasks = []
+        for device in device_metadata:
+            if device["type"] == "plug":
+                tasks.append(fetch_plug_status(session, device))
+            else:
+                tasks.append(fetch_motion_status(session, device))
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # dashboard_state 업데이트
+        # Update dashboard_state
         device_rows   = []
         success_count = 0
         fail_count    = 0
+
         for result, device in zip(results, device_metadata):
             if isinstance(result, Exception) or result is None:
                 fail_count += 1
                 device_rows.append({
                     "label":    device["label"],
                     "location": device["location_name"],
+                    "room":     device["room_name"],
+                    "type":     device["type"],
                     "power":    "-",
                     "energy":   "-",
-                    "status":   "실패",
+                    "motion":   "-",
+                    "temp":     "-",
+                    "battery":  "-",
+                    "status":   "Fail",
                     "updated":  start_time,
                 })
                 if isinstance(result, Exception):
-                    logging.error(f"기기 {device['label']} 오류: {result}")
+                    logging.error(f"Device {device['label']} error: {result}")
             else:
                 success_count += 1
-                device_rows.append({
-                    "label":    device["label"],
-                    "location": device["location_name"],
-                    "power":    result["power"],
-                    "energy":   result["energy"],
-                    "status":   "성공",
-                    "updated":  start_time,
-                })
+                if device["type"] == "plug":
+                    device_rows.append({
+                        "label":    device["label"],
+                        "location": device["location_name"],
+                        "room":     device["room_name"],
+                        "type":     "plug",
+                        "power":    result["power"],
+                        "energy":   result["energy"],
+                        "motion":   "-",
+                        "temp":     "-",
+                        "battery":  "-",
+                        "status":   "OK",
+                        "updated":  start_time,
+                    })
+                else:
+                    device_rows.append({
+                        "label":    device["label"],
+                        "location": device["location_name"],
+                        "room":     device["room_name"],
+                        "type":     "motion",
+                        "power":    "-",
+                        "energy":   "-",
+                        "motion":   result["motion"],
+                        "temp":     result["temperature"] if result["temperature"] is not None else "-",
+                        "battery":  "-",
+                        "status":   "OK",
+                        "updated":  start_time,
+                    })
 
-        dashboard_state["status"]      = "수집 중"
-        dashboard_state["last_cycle"]  = start_time
-        dashboard_state["total"]       = len(device_metadata)
-        dashboard_state["success"]     = success_count
-        dashboard_state["fail"]        = fail_count
-        dashboard_state["devices"]     = device_rows
+        dashboard_state["status"]    = "Collecting"
+        dashboard_state["last_cycle"] = start_time
+        dashboard_state["total"]     = len(device_metadata)
+        dashboard_state["success"]   = success_count
+        dashboard_state["fail"]      = fail_count
+        dashboard_state["devices"]   = device_rows
 
-        # 대시보드에 갱신 알림
         if on_data_updated:
             try:
                 on_data_updated()
@@ -557,13 +717,13 @@ async def periodic_tasks(session):
                 pass
 
         end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        logging.info(f"================= 완료: {end_time} =================\n")
+        logging.info(f"================= Done: {end_time} =================\n")
 
         await asyncio.sleep(DEVICE_STATUS_INTERVAL)
 
 
 # ==============================
-# 스케줄러
+# Scheduler
 # ==============================
 
 async def scheduler():
@@ -581,7 +741,7 @@ async def scheduler():
                 connector=connector,
                 timeout=SESSION_TIMEOUT
             ) as session:
-                logging.info("최신 기기 목록을 불러옵니다...")
+                logging.info("Fetching latest device list...")
                 await fetch_device_list(session)
 
                 while running:
@@ -589,8 +749,8 @@ async def scheduler():
 
         except RETRIABLE_EXCEPTIONS as e:
             logging.error(
-                f"세션 수준 네트워크 오류: {type(e).__name__}: {e}\n"
-                f"{BASE_RETRY_WAIT}초 후 세션을 재생성합니다..."
+                f"Session-level network error: {type(e).__name__}: {e}\n"
+                f"{BASE_RETRY_WAIT}s, recreating session..."
             )
             await asyncio.sleep(BASE_RETRY_WAIT)
 
@@ -598,49 +758,49 @@ async def scheduler():
             if not running:
                 break
             logging.error(
-                f"스케줄러 오류: {type(e).__name__}: {e}\n"
-                f"{BASE_RETRY_WAIT}초 후 재시작합니다..."
+                f"Scheduler error: {type(e).__name__}: {e}\n"
+                f"{BASE_RETRY_WAIT}s, restarting..."
             )
             await asyncio.sleep(BASE_RETRY_WAIT)
 
-    logging.info("스케줄러가 안전하게 종료되었습니다.")
+    logging.info("Scheduler shut down safely.")
 
 
 # ==============================
-# 유틸리티
+# Utilities
 # ==============================
 
 def print_device_list():
     if not device_metadata:
-        logging.warning("기기 목록이 비어 있습니다.")
+        logging.warning("Device list is empty.")
     else:
-        logging.info("=== 현재 기기 목록 ===")
+        logging.info("=== Current Device List ===")
         for idx, device in enumerate(device_metadata, start=1):
             logging.info(
-                f"{idx}. ID={device['id']}, Label={device['label']}, "
-                f"Location={device['location_name']}"
+                f"{idx}. [{device['type']}] {device['label']} | "
+                f"Location={device['location_name']}, Room={device['room_name'] or '(none)'}"
             )
         logging.info("======================\n")
 
+
 def shutdown_handler(signum, frame):
     global running
-    logging.info("종료 요청 감지. 정리 중...")
+    logging.info("Shutdown signal received. Cleaning up...")
     running = False
 
 
 # ==============================
-# 메인
+# Main
 # ==============================
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT,  shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
-    logging.info("스마트띵스 데이터 수집을 시작합니다.")
+    logging.info("Starting SmartThings data collection.")
 
-    # 토큰 로드 (없으면 종료)
     if not load_token():
-        logging.error("smartthings_auth.py를 먼저 실행해주세요.")
+        logging.error("Please run smartthings_auth.py first.")
         exit(1)
 
     load_metadata()
@@ -648,11 +808,11 @@ if __name__ == "__main__":
     print_device_list()
 
     try:
-        logging.info("데이터 수집을 시작합니다. 종료하려면 Ctrl+C를 누르세요.")
+        logging.info("Starting data collection. Press Ctrl+C to stop.")
         asyncio.run(scheduler())
     finally:
         try:
             asyncio.run(asyncio.sleep(0))
         except RuntimeError:
             pass
-        logging.info("프로그램이 정상적으로 종료되었습니다.")
+        logging.info("Program terminated normally.")

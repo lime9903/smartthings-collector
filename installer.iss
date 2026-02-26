@@ -1,6 +1,6 @@
-#define MyAppName "SmartThings 데이터 수집기"
+#define MyAppName "SmartThings Data Collector"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "Lab"
+#define MyAppPublisher "lime9903"
 #define MyAppExeName "SmartThingsCollector.exe"
 
 [Setup]
@@ -14,29 +14,29 @@ OutputBaseFilename=SmartThingsCollector_Setup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
-SetupIconFile=
+SetupIconFile=app_icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 PrivilegesRequired=lowest
 
 [Languages]
-Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
+Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "바탕화면에 바로가기 만들기"; GroupDescription: "추가 아이콘:"; Flags: unchecked
-Name: "startupicon"; Description: "시작 시 자동 실행 (시작프로그램 등록)"; GroupDescription: "추가 아이콘:"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
+Name: "startupicon"; Description: "Run automatically on startup"; GroupDescription: "Additional icons:"; Flags: unchecked
 
 [Files]
-; PyInstaller로 빌드된 실행 파일
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "app_icon.ico";          DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}";        Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\{#MyAppName} 제거";   Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}";  Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-Name: "{userstartup}\{#MyAppName}";  Filename: "{app}\{#MyAppExeName}"; Tasks: startupicon
+Name: "{group}\{#MyAppName}";         Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app_icon.ico"
+Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app_icon.ico"; Tasks: desktopicon
+Name: "{userstartup}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: startupicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "지금 바로 실행하기"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch SmartThings Data Collector"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

@@ -11,6 +11,21 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+
+if not exist "config.json" (
+    echo [ERROR] config.json not found.
+    echo         Please create config.json with CLIENT_ID and CLIENT_SECRET.
+    pause
+    exit /b 1
+)
+
+if not exist "app_icon.ico" (
+    echo [ERROR] app_icon.ico not found.
+    echo         Please place app_icon.ico in the project folder.
+    pause
+    exit /b 1
+)
+
 echo [1/3] Installing libraries...
 pip install aiohttp matplotlib pyinstaller --quiet
 echo       Done.
@@ -21,10 +36,12 @@ pyinstaller ^
   --onefile ^
   --noconsole ^
   --name "SmartThingsCollector" ^
+  --icon "app_icon.ico" ^
   --add-data "smartthings_collector.py;." ^
   --add-data "smartthings_dashboard.py;." ^
   --add-data "smartthings_auth.py;." ^
   --add-data "config.json;." ^
+  --add-data "app_icon.ico;." ^
   --hidden-import aiohttp ^
   --hidden-import asyncio ^
   --hidden-import matplotlib ^
