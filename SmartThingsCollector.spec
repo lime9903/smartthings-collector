@@ -5,7 +5,7 @@ a = Analysis(
     ['launcher.py'],
     pathex=[],
     binaries=[],
-    datas=[('smartthings_collector.py', '.'), ('smartthings_dashboard.py', '.'), ('smartthings_auth.py', '.'), ('config.json', '.')],
+    datas=[('smartthings_collector.py', '.'), ('smartthings_dashboard.py', '.'), ('smartthings_auth.py', '.'), ('config.json', '.'), ('app_icon.ico', '.')],
     hiddenimports=['aiohttp', 'asyncio', 'matplotlib', 'matplotlib.backends.backend_tkagg', 'tkinter'],
     hookspath=[],
     hooksconfig={},
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['app_icon.ico'],
 )

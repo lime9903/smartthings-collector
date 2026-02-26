@@ -40,7 +40,7 @@ DEVICE_ALIAS = {
     "MS1": "Entrance",
     "MS2": "Between Junhee/Jeein (Rear)",
     "MS3": "Between Jeein/Haewon (Front)",
-    "MS4": "Meeting Table (Rear)",
+    "MS4": "Window side (Rear)",
     "MS5": "Meeting Table (Front)",
     "MS6": "Meeting Wall (Left)",
     "MS7": "Below Smart TV (Left)",
